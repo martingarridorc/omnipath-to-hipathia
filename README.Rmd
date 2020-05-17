@@ -1,0 +1,74 @@
+---
+title: "Omnipath to hipathia"
+author: "Martin Garrido Rodriguez-Cordoba"
+output: github_document
+---
+
+## Abstract
+
+The main goal of this parser is to transform an [Omnipath](http://omnipathdb.org/) formatted set of interactions into an object usable by the mechanistic modelling tool [hipathia](http://hipathia.babelomics.org/). Hipathia uses a signal propagation algorithm to estimate the activity of receptor-to-effector signaling circuits. Its current version uses a pathway-centric approach fed by a mixture of context-specific and generic signaling pathways as defined by the [KEGG  classification](https://www.genome.jp/kegg/pathway.html). On the other hand, Omnipath is a meta-resource that contains biological information from different databases in a ready-to-use tabular format. It comprises several types of relationships between biological entities as protein-protein interactions or TF-target relationships, as well as gene and protein functional annotations.
+
+## Case of use
+
+Load required packages
+
+```{r, message = FALSE}
+library(OmnipathR)
+library(hipathia)
+library(igraph)
+library(dplyr)
+library(Rgraphviz)
+library(org.Hs.eg.db)
+source("R/omnipath-to-hipathia.R")
+```
+
+Import omnipath interactions and subset to directed interactions which are not "auto" interactions.
+
+```{r}
+# import all interactions in omnipath and intercell information
+interactions <- OmnipathR::import_Omnipath_Interactions()
+
+# filter only to directed interactions (consensus) and remove self interactions
+intInteractions <- subset(interactions, 
+                          (consensus_stimulation == 1 & consensus_inhibition == 0) | 
+                            (consensus_stimulation == 0 & consensus_inhibition == 1)) %>%
+  subset(source_genesymbol != target_genesymbol)
+# print head of interesting interactions
+head(intInteractions) %>% OmnipathR::print_interactions()
+```
+
+To test the parser, we will create a network using functional annotations from KEGG. We will select the interactions between genes annotated within the "Retrograde endocannabinoid signaling" pathway.
+
+```{r}
+# import kegg annotations
+keggAnnotations <- OmnipathR::import_Omnipath_annotations(filter_databases = "KEGG")
+# subset to pathway of interest
+intGenes <- subset(keggAnnotations, value == "Retrograde endocannabinoid signaling") %>% 
+  pull(genesymbol)
+selectedInteractions <- subset(intInteractions, source_genesymbol %in% intGenes & target_genesymbol %in% intGenes)
+# print head of interesting interactions
+head(selectedInteractions) %>% OmnipathR::print_interactions()
+```
+
+Use the **omnipathToHipathia** function to create the metaginfo object.  
+
+```{r}
+mgi <- omnipathToHipathia(selectedInteractions)
+```
+
+Plot the resulting graph object, which has been divided into circuits usable by the hipathia function.
+
+```{r}
+g <- mgi$pathigraphs$hsa00$graph
+plot(g, layout = graphVizLayout(g), vertex.shape = "none")
+```
+
+## Note
+
+This example is carried out with an extremely simple network. **The creation of the MGI object takes a really long time on complex graphs**, specially when there are lots of edges between nodes which are not receptors nor effectors.
+
+## Session info
+
+```{r}
+sessionInfo()
+```

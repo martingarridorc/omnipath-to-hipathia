@@ -8,7 +8,7 @@ output: github_document
 
 The main goal of this parser is to transform an [Omnipath](http://omnipathdb.org/) formatted set of interactions into an object usable by the mechanistic modelling tool [hipathia](http://hipathia.babelomics.org/). Hipathia uses a signal propagation algorithm to estimate the activity of receptor-to-effector signaling circuits. Its current version uses a pathway-centric approach fed by a mixture of context-specific and generic signaling pathways as defined by the [KEGG  classification](https://www.genome.jp/kegg/pathway.html). On the other hand, Omnipath is a meta-resource that contains biological information from different databases in a ready-to-use tabular format. It comprises several types of relationships between biological entities as protein-protein interactions or TF-target relationships, as well as gene and protein functional annotations.
 
-## Case of use
+## Packages and functions
 
 Load required packages
 
@@ -17,55 +17,97 @@ library(OmnipathR)
 library(hipathia)
 library(igraph)
 library(dplyr)
+library(ggplot2)
+library(ggraph)
 library(Rgraphviz)
+library(cowplot)
 library(org.Hs.eg.db)
+library(purrr)
 source("R/omnipath-to-hipathia.R")
+source("R/visualize-hipathia-graph.R")
 ```
 
-Import omnipath interactions and subset to directed interactions which are not "auto" interactions.
+## Prepare Omnipath interactions 
+
+Import all Omnipath interactions with `import_Omnipath_Interactions()`, which contains only interactions with references. Subset such interactions to consensus activations or inhibitiosn and discard auto-interactions. The **curation_effort** attribute contains the the number of unique resource+reference pairs per interaction.
 
 ```{r}
-# import all interactions in omnipath and intercell information
 interactions <- OmnipathR::import_Omnipath_Interactions()
-
 # filter only to directed interactions (consensus) and remove self interactions
 intInteractions <- subset(interactions, 
                           (consensus_stimulation == 1 & consensus_inhibition == 0) | 
                             (consensus_stimulation == 0 & consensus_inhibition == 1)) %>%
   subset(source_genesymbol != target_genesymbol)
-# print head of interesting interactions
-head(intInteractions) %>% OmnipathR::print_interactions()
 ```
 
-To test the parser, we will create a network using functional annotations from KEGG. We will select the interactions between genes annotated within the "Retrograde endocannabinoid signaling" pathway.
+## Hipathia default
+
+Hipathia uses a pathway-centric approach, which isolates nodes and interactions in different biological contexts defined by KEGG. It decomposes the signaling networks into a meta graph information object (MGI), which contains the main graph, the decomposed signaling circuits (in form of [igraph](https://igraph.org/) objects) and the neccesary metadata to carry out the analysis. For this case of use, we will focus on the [cell cycle pathway](https://www.genome.jp/kegg-bin/show_pathway?hsa04110).
 
 ```{r}
-# import kegg annotations
-keggAnnotations <- OmnipathR::import_Omnipath_annotations(filter_databases = "KEGG")
-# subset to pathway of interest
-intGenes <- subset(keggAnnotations, value == "Retrograde endocannabinoid signaling") %>% 
-  pull(genesymbol)
-selectedInteractions <- subset(intInteractions, source_genesymbol %in% intGenes & target_genesymbol %in% intGenes)
-# print head of interesting interactions
-head(selectedInteractions) %>% OmnipathR::print_interactions()
+intPathways <- c("Cell Cycle"="hsa04110")
+hipathiaMgi <- hipathia::load_pathways(species = "hsa", pathways_list = intPathways)
 ```
 
-Use the **omnipathToHipathia** function to create the metaginfo object.  
+This is the complete network already processed to be used by Hipathia
 
 ```{r}
-mgi <- omnipathToHipathia(selectedInteractions)
+beautyHipathiaGraph(hipathiaMgi$pathigraphs$hsa04110$graph)
 ```
 
-Plot the resulting graph object, which has been divided into circuits usable by the hipathia function.
+And some of the decomposed circuits...
 
 ```{r}
-g <- mgi$pathigraphs$hsa00$graph
-plot(g, layout = graphVizLayout(g), vertex.shape = "none")
+lapply(hipathiaMgi$pathigraphs$hsa04110$subgraphs[1:3], beautyHipathiaGraph)
+```
+
+## Hipathia nodes, Omnipath interactions
+
+For a first try, we will employ the subset of nodes from the [cell cycle pathway](https://www.genome.jp/kegg-bin/show_pathway?hsa04110), using Omnipath interactions to link the nodes within a range of curation_effort values. The first step consists on obtaining the list of genes (nodes) from hipathia:
+
+```{r}
+intGenes <- V(hipathiaMgi$pathigraphs$hsa04110$graph)$genesList %>%
+  unlist() %>%
+  mapIds(x = org.Hs.eg.db, keys = ., keytype = "ENTREZID", column = "SYMBOL") %>%
+  as.character() %>%
+  .[!is.na(.)]
+```
+
+Once with interesting genes (nodes), we can create a list of interactions using a range of curation effort cutoffs.
+
+```{r}
+curationValues <- c(15, 20, 25, 30, 35, 40, 45, 50)
+interactionsList <- lapply(curationValues, function(cutoff) {
+  selectedInteractions <- subset(intInteractions, curation_effort >= cutoff) %>%
+    subset(source_genesymbol %in% intGenes & target_genesymbol %in% intGenes) 
+})
+names(interactionsList) <- curationValues
+```
+
+Once with the interactions filtered and prepared, we can apply the **omnipathToHipathia** function to transform this networks into the hipathia MGI object
+
+```{r, message = FALSE}
+mgiList <- lapply(interactionsList, omnipathToHipathia)
+```
+
+Finally, we can visualize the resulting graphs for the range of curation effort cutoffs...
+
+```{r, fig.width=25, fig.height=10}
+purrr::imap(mgiList, function(x, y) beautyHipathiaGraph(x$pathigraphs$hsa00$graph) + ggtitle(paste0("Curation efffort cutoff: ", y))) %>%
+  cowplot::plot_grid(plotlist = ., nrow = 2)
 ```
 
 ## Note
 
-This example is carried out with an extremely simple network. **The creation of the MGI object takes a really long time on complex graphs**, specially when there are lots of edges between nodes which are not receptors nor effectors.
+**The creation of the MGI object takes a really long time on complex graphs**, specially when there are lots of edges between nodes which are not receptors nor effectors.
+
+## Possible features
+
+1. Use the curation effort to create a range of results depending on the network reliability.
+
+2. Expand the effector nodes to new effecotrs, using Kinase-Substrate or TF-target interactions.
+
+3. Combine the functional annotation from different databases to create a list of context-specific pathways (such as KEGG, but without using only its interactions).
 
 ## Session info
 

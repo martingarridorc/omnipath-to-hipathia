@@ -1,6 +1,7 @@
 Omnipath to hipathia
 ================
 Martin Garrido Rodriguez-Cordoba
+2020-05-25
 
 ## Abstract
 
@@ -24,18 +25,28 @@ and protein functional annotations.
 Load required packages
 
 ``` r
+# main packages
 library(OmnipathR)
 library(hipathia)
+# annotation package to translate symbols into entrezs
+library(org.Hs.eg.db)
+# packages to handle and plot graphs
 library(igraph)
-library(dplyr)
 library(ggplot2)
 library(ggraph)
 library(Rgraphviz)
 library(cowplot)
-library(org.Hs.eg.db)
+library(ggforce)
+# other packages from tidyverse
+library(dplyr)
 library(purrr)
+# package to create pretty heatmap
+library(ComplexHeatmap)
+# custom parsing and plotting funs
 source("R/omnipath-to-hipathia.R")
 source("R/visualize-hipathia-graph.R")
+# set ggplot default theme
+theme_set(theme_bw() + theme(plot.title = element_text(hjust = 0.5)))
 ```
 
 ## Prepare Omnipath interactions
@@ -63,7 +74,20 @@ intInteractions <- subset(interactions,
   subset(source_genesymbol != target_genesymbol)
 ```
 
-## Hipathia default
+Explore number of interactions per curation\_effort
+level
+
+``` r
+# as the majority of interactions occur in the low range of curation efforts, zoom this zone
+ggplot(intInteractions, aes(x = curation_effort)) +
+  geom_histogram(binwidth = 1) +
+  ggforce::facet_zoom(x = curation_effort %in% seq(-1,25, by = 1)) +
+  ggtitle("Interactions by curation effort")
+```
+
+![](README_files/figure-gfm/unnamed-chunk-3-1.png)<!-- -->
+
+## Hipathia default MGI
 
 Hipathia uses a pathway-centric approach, which isolates nodes and
 interactions in different biological contexts defined by KEGG. It
@@ -89,28 +113,39 @@ This is the complete network already processed to be used by Hipathia
 beautyHipathiaGraph(hipathiaMgi$pathigraphs$hsa04110$graph)
 ```
 
-![](README_files/figure-gfm/unnamed-chunk-4-1.png)<!-- -->
+![](README_files/figure-gfm/unnamed-chunk-5-1.png)<!-- -->
 
-And some of the decomposed
-circuits…
+Some of the decomposed subgraphs (all receptors that reach one
+effector)…
 
 ``` r
-lapply(hipathiaMgi$pathigraphs$hsa04110$subgraphs[1:3], beautyHipathiaGraph)
+lapply(hipathiaMgi$pathigraphs$hsa04110$effector.subgraphs[1:2], beautyHipathiaGraph)
+```
+
+    ## $`P-hsa04110-46`
+
+![](README_files/figure-gfm/unnamed-chunk-6-1.png)<!-- -->
+
+    ## 
+    ## $`P-hsa04110-96 97`
+
+![](README_files/figure-gfm/unnamed-chunk-6-2.png)<!-- -->
+
+And some of the decomposed effector circuits (one receptor to one
+effector)…
+
+``` r
+lapply(hipathiaMgi$pathigraphs$hsa04110$subgraphs[1:2], beautyHipathiaGraph)
 ```
 
     ## $`P-hsa04110-1-46`
 
-![](README_files/figure-gfm/unnamed-chunk-5-1.png)<!-- -->
+![](README_files/figure-gfm/unnamed-chunk-7-1.png)<!-- -->
 
     ## 
     ## $`P-hsa04110-1-96 97`
 
-![](README_files/figure-gfm/unnamed-chunk-5-2.png)<!-- -->
-
-    ## 
-    ## $`P-hsa04110-1-60 10 11 12 13 14 9`
-
-![](README_files/figure-gfm/unnamed-chunk-5-3.png)<!-- -->
+![](README_files/figure-gfm/unnamed-chunk-7-2.png)<!-- -->
 
 ## Hipathia nodes, Omnipath interactions
 
@@ -130,28 +165,61 @@ intGenes <- V(hipathiaMgi$pathigraphs$hsa04110$graph)$genesList %>%
 
     ## 'select()' returned 1:1 mapping between keys and columns
 
+And subset the Omnipath interactions to those which contain a relation
+between genes in the pathway **including complexes**.
+
+``` r
+sourceIndex <- strsplit(intInteractions$source_genesymbol, "_") %>% 
+  sapply(function(x) any(x %in% intGenes))
+targetIndex <- strsplit(intInteractions$target_genesymbol, "_") %>% 
+  sapply(function(x) any(x %in% intGenes))
+# filter to interactions fulfilling the criteria
+filteredInteractions <- intInteractions[sourceIndex & targetIndex, ]
+```
+
 Once with interesting genes (nodes), we can create a list of
 interactions using a range of curation effort cutoffs.
 
 ``` r
-curationValues <- c(15, 20, 25, 30, 35, 40, 45, 50)
+curationValues <- c(15, 25, 35, 45, 55)
 interactionsList <- lapply(curationValues, function(cutoff) {
-  selectedInteractions <- subset(intInteractions, curation_effort >= cutoff) %>%
-    subset(source_genesymbol %in% intGenes & target_genesymbol %in% intGenes) 
+  selectedInteractions <- subset(filteredInteractions, curation_effort >= cutoff)
 })
 names(interactionsList) <- curationValues
 ```
 
 Once with the interactions filtered and prepared, we can apply the
-**omnipathToHipathia** function to transform this networks into the
-hipathia MGI object
+**omnipathToHipathia()** function to transform this networks into the
+hipathia MGI object. This function relies on the hipathia function
+**mgi\_from\_sif()**, which creates the MGI object from the sif and
+attribute files. The **omnipathToHipathia()** will format the network
+and write the files into a temporary location in order to be imported
+with hipathia.
 
 ``` r
-mgiList <- lapply(interactionsList, omnipathToHipathia)
+mgiList <- purrr::imap(interactionsList, function(interactions, cutoff){
+  t1 <- Sys.time()
+  mgi <- omnipathToHipathia(omnipathInteractions = interactions)
+  t2 <- Sys.time()
+  print(paste0("Curation effort cutoff: ", cutoff))
+  print(t2 - t1)
+  return(mgi)
+})
 ```
 
-Finally, we can visualize the resulting graphs for the range of curation
-effort
+    ## [1] "Curation effort cutoff: 15"
+    ## Time difference of 3.212771 secs
+    ## [1] "Curation effort cutoff: 25"
+    ## Time difference of 0.5865614 secs
+    ## [1] "Curation effort cutoff: 35"
+    ## Time difference of 0.4864852 secs
+    ## [1] "Curation effort cutoff: 45"
+    ## Time difference of 0.3831959 secs
+    ## [1] "Curation effort cutoff: 55"
+    ## Time difference of 0.3779583 secs
+
+Finally, we can visualize the resulting MGI graphs for the range of
+curation effort
 cutoffs…
 
 ``` r
@@ -163,7 +231,113 @@ purrr::imap(mgiList, function(x, y) beautyHipathiaGraph(x$pathigraphs$hsa00$grap
 
     ## Warning in .local(from, to, graph): edges replaced: 'N-hsa00-29|N-hsa00-39'
 
-![](README_files/figure-gfm/unnamed-chunk-9-1.png)<!-- -->
+![](README_files/figure-gfm/unnamed-chunk-12-1.png)<!-- -->
+
+## Hipathia run with BRCA data and Omnipath MGIs
+
+From the [hipathia
+vignette](https://www.bioconductor.org/packages/release/bioc/vignettes/hipathia/inst/doc/hipathia-vignette.pdf):
+
+“In order to illustrate the hipathia package functionalities an example
+dataset has been prepared. Data has been downloaded from The Cancer
+Genome Atlas data repository, from the BRCA-US project, release 20. 20
+tumor and 20 normal samples of RNA-Seq data have been randomly selected
+and normalized. Specifically, raw data has been corrected for batch
+effect using the ComBat function from package sva, then corrected for
+RNA composition bias applying TMM normalization from package edgeR, and
+finally log-transformed.”
+
+“The dataset brca is a SummarizedExperiment object, including the gene
+expression of the 40 samples in the assay raw, and the information about
+whether each sample comes from Tumor or Normal tissues in the group
+columns of the colData dataFrame.”
+
+``` r
+# prepare data for hipathia
+data("brca")
+toHipahia <- translate_data(brca_data, "hsa") %>%
+  normalize_data(., by_quantiles = TRUE)
+```
+
+    ## snapshotDate(): 2020-04-27
+
+    ## translated ids = 3184 (1) 
+    ## untranslated ids = 3 (0.00094) 
+    ## multihit ids = 0 (0)
+
+``` r
+# add default hipathia pathway to analysis
+defaultMgi <- list("default" = hipathiaMgi)
+mgiList <- c(defaultMgi, mgiList)
+# iterative analysis with all MGIs, extracting path values after hipathia analysis
+pathValList <- lapply(mgiList, function(x) {
+  # perform hipathia analysis
+  pathVals <- hipathia::hipathia(toHipahia, metaginfo = x) %>%
+    get_paths_data(matrix = TRUE)
+  # get path names
+  rownames(pathVals) <- hipathia::get_path_names(metaginfo = x, names = rownames(pathVals))
+  # center path values
+  pathVals <- t(scale(t(pathVals))) 
+  return(pathVals)
+})
+```
+
+    ## Added missing genes: 6 (0.19%)
+
+    ## HiPathia processing...
+    ## hsa04110 - Cell cycle
+
+    ## Added missing genes: 2 (0.06%)
+
+    ## HiPathia processing...
+    ## hsa00 - Omnipath 
+    ## HiPathia processing...
+    ## hsa00 - Omnipath 
+    ## HiPathia processing...
+    ## hsa00 - Omnipath 
+    ## HiPathia processing...
+    ## hsa00 - Omnipath 
+    ## HiPathia processing...
+    ## hsa00 - Omnipath
+
+Plot a global heatmap to visualize path values by MGI
+
+``` r
+# prepare matrix to plot
+toHm <- Reduce(rbind, pathValList) %>%
+  t()
+# remove non informative column names
+colnames(toHm) <- gsub("Omnipath:.|Cell cycle:.", "", colnames(toHm))
+# create group annotation
+set.seed(109)
+rightAnn <- ComplexHeatmap::rowAnnotation(df = brca_design)
+# create column split and annotation
+cutoff <- rep(names(pathValList), sapply(pathValList, nrow)) %>%
+  factor(x = ., levels = unique(.))
+colAnn <- ComplexHeatmap::HeatmapAnnotation(df = data.frame(cutoff = cutoff))
+# plot heatmap without column clustering
+Heatmap(toHm, 
+        right_annotation = rightAnn,
+        column_split = cutoff,
+        cluster_column_slices = FALSE,
+        show_row_names = FALSE,
+        border = TRUE,
+        row_title = "Patients")
+```
+
+![](README_files/figure-gfm/unnamed-chunk-14-1.png)<!-- -->
+
+``` r
+# plot heatmap with column clustering
+Heatmap(toHm, 
+        right_annotation = rightAnn,
+        top_annotation = colAnn,
+        show_row_names = FALSE,
+        border = TRUE,
+        row_title = "Patients")
+```
+
+![](README_files/figure-gfm/unnamed-chunk-14-2.png)<!-- -->
 
 ## Note
 
@@ -176,7 +350,7 @@ not receptors nor effectors.
 1.  Use the curation effort to create a range of results depending on
     the network reliability.
 
-2.  Expand the effector nodes to new effecotrs, using Kinase-Substrate
+2.  Expand the effector nodes to new effectors, using Kinase-Substrate
     or TF-target interactions.
 
 3.  Combine the functional annotation from different databases to create
@@ -210,54 +384,59 @@ sessionInfo()
     ##  [8] datasets  methods   base     
     ## 
     ## other attached packages:
-    ##  [1] purrr_0.3.4                 org.Hs.eg.db_3.11.0        
-    ##  [3] AnnotationDbi_1.50.0        cowplot_1.0.0              
-    ##  [5] Rgraphviz_2.32.0            graph_1.66.0               
-    ##  [7] ggraph_2.0.2                ggplot2_3.3.0              
-    ##  [9] dplyr_0.8.5                 hipathia_2.4.0             
-    ## [11] MultiAssayExperiment_1.14.0 SummarizedExperiment_1.18.1
-    ## [13] DelayedArray_0.14.0         matrixStats_0.56.0         
-    ## [15] Biobase_2.48.0              GenomicRanges_1.40.0       
-    ## [17] GenomeInfoDb_1.24.0         IRanges_2.22.1             
-    ## [19] S4Vectors_0.26.0            AnnotationHub_2.20.0       
-    ## [21] BiocFileCache_1.12.0        dbplyr_1.4.3               
-    ## [23] BiocGenerics_0.34.0         OmnipathR_1.2.0            
-    ## [25] igraph_1.2.5               
+    ##  [1] ComplexHeatmap_2.5.3        purrr_0.3.4                
+    ##  [3] dplyr_0.8.5                 ggforce_0.3.1              
+    ##  [5] cowplot_1.0.0               Rgraphviz_2.32.0           
+    ##  [7] graph_1.66.0                ggraph_2.0.2               
+    ##  [9] ggplot2_3.3.0               org.Hs.eg.db_3.11.0        
+    ## [11] AnnotationDbi_1.50.0        hipathia_2.4.0             
+    ## [13] MultiAssayExperiment_1.14.0 SummarizedExperiment_1.18.1
+    ## [15] DelayedArray_0.14.0         matrixStats_0.56.0         
+    ## [17] Biobase_2.48.0              GenomicRanges_1.40.0       
+    ## [19] GenomeInfoDb_1.24.0         IRanges_2.22.1             
+    ## [21] S4Vectors_0.26.0            AnnotationHub_2.20.0       
+    ## [23] BiocFileCache_1.12.0        dbplyr_1.4.3               
+    ## [25] BiocGenerics_0.34.0         OmnipathR_1.2.0            
+    ## [27] igraph_1.2.5               
     ## 
     ## loaded via a namespace (and not attached):
     ##  [1] bitops_1.0-6                  bit64_0.9-7                  
-    ##  [3] httr_1.4.1                    tools_4.0.0                  
-    ##  [5] R6_2.4.1                      DBI_1.1.0                    
-    ##  [7] colorspace_1.4-1              withr_2.2.0                  
-    ##  [9] tidyselect_1.0.0              gridExtra_2.3                
-    ## [11] bit_1.1-15.2                  curl_4.3                     
-    ## [13] compiler_4.0.0                preprocessCore_1.50.0        
-    ## [15] labeling_0.3                  scales_1.1.0                 
-    ## [17] rappdirs_0.3.1                stringr_1.4.0                
-    ## [19] digest_0.6.25                 rmarkdown_2.1                
-    ## [21] XVector_0.28.0                pkgconfig_2.0.3              
-    ## [23] htmltools_0.4.0               fastmap_1.0.1                
-    ## [25] rlang_0.4.6                   RSQLite_2.2.0                
-    ## [27] shiny_1.4.0.2                 farver_2.0.3                 
-    ## [29] jsonlite_1.6.1                RCurl_1.98-1.2               
-    ## [31] magrittr_1.5                  GenomeInfoDbData_1.2.3       
-    ## [33] Matrix_1.2-18                 Rcpp_1.0.4.6                 
-    ## [35] munsell_0.5.0                 viridis_0.5.1                
-    ## [37] lifecycle_0.2.0               stringi_1.4.6                
-    ## [39] yaml_2.2.1                    MASS_7.3-51.6                
-    ## [41] zlibbioc_1.34.0               blob_1.2.1                   
-    ## [43] promises_1.1.0                ggrepel_0.8.2                
-    ## [45] crayon_1.3.4                  lattice_0.20-41              
-    ## [47] graphlayouts_0.7.0            knitr_1.28                   
-    ## [49] pillar_1.4.4                  servr_0.16                   
-    ## [51] glue_1.4.0                    BiocVersion_3.11.1           
-    ## [53] evaluate_0.14                 BiocManager_1.30.10          
-    ## [55] vctrs_0.2.4                   tweenr_1.0.1                 
-    ## [57] httpuv_1.5.2                  gtable_0.3.0                 
-    ## [59] polyclip_1.10-0               tidyr_1.0.2                  
-    ## [61] assertthat_0.2.1              xfun_0.13                    
-    ## [63] ggforce_0.3.1                 mime_0.9                     
-    ## [65] xtable_1.8-4                  tidygraph_1.1.2              
-    ## [67] later_1.0.0                   viridisLite_0.3.0            
-    ## [69] tibble_3.0.1                  memoise_1.1.0                
-    ## [71] ellipsis_0.3.0                interactiveDisplayBase_1.26.0
+    ##  [3] RColorBrewer_1.1-2            httr_1.4.1                   
+    ##  [5] tools_4.0.0                   R6_2.4.1                     
+    ##  [7] DBI_1.1.0                     colorspace_1.4-1             
+    ##  [9] GetoptLong_0.1.8              withr_2.2.0                  
+    ## [11] tidyselect_1.0.0              gridExtra_2.3                
+    ## [13] bit_1.1-15.2                  curl_4.3                     
+    ## [15] compiler_4.0.0                preprocessCore_1.50.0        
+    ## [17] labeling_0.3                  scales_1.1.0                 
+    ## [19] rappdirs_0.3.1                stringr_1.4.0                
+    ## [21] digest_0.6.25                 rmarkdown_2.1                
+    ## [23] XVector_0.28.0                pkgconfig_2.0.3              
+    ## [25] htmltools_0.4.0               fastmap_1.0.1                
+    ## [27] GlobalOptions_0.1.1           rlang_0.4.6                  
+    ## [29] RSQLite_2.2.0                 shiny_1.4.0.2                
+    ## [31] shape_1.4.4                   farver_2.0.3                 
+    ## [33] jsonlite_1.6.1                RCurl_1.98-1.2               
+    ## [35] magrittr_1.5                  GenomeInfoDbData_1.2.3       
+    ## [37] Matrix_1.2-18                 Rcpp_1.0.4.6                 
+    ## [39] munsell_0.5.0                 viridis_0.5.1                
+    ## [41] lifecycle_0.2.0               stringi_1.4.6                
+    ## [43] yaml_2.2.1                    MASS_7.3-51.6                
+    ## [45] zlibbioc_1.34.0               blob_1.2.1                   
+    ## [47] promises_1.1.0                ggrepel_0.8.2                
+    ## [49] crayon_1.3.4                  lattice_0.20-41              
+    ## [51] graphlayouts_0.7.0            circlize_0.4.9               
+    ## [53] knitr_1.28                    pillar_1.4.4                 
+    ## [55] rjson_0.2.20                  servr_0.16                   
+    ## [57] glue_1.4.0                    BiocVersion_3.11.1           
+    ## [59] evaluate_0.14                 BiocManager_1.30.10          
+    ## [61] png_0.1-7                     vctrs_0.2.4                  
+    ## [63] tweenr_1.0.1                  httpuv_1.5.2                 
+    ## [65] gtable_0.3.0                  polyclip_1.10-0              
+    ## [67] tidyr_1.0.2                   clue_0.3-57                  
+    ## [69] assertthat_0.2.1              xfun_0.13                    
+    ## [71] mime_0.9                      xtable_1.8-4                 
+    ## [73] tidygraph_1.1.2               later_1.0.0                  
+    ## [75] viridisLite_0.3.0             tibble_3.0.1                 
+    ## [77] memoise_1.1.0                 cluster_2.1.0                
+    ## [79] ellipsis_0.3.0                interactiveDisplayBase_1.26.0

@@ -1,6 +1,7 @@
 ---
 title: "Omnipath to hipathia"
 author: "Martin Garrido Rodriguez-Cordoba"
+date: "`r Sys.Date()`"
 output: github_document
 ---
 
@@ -13,18 +14,28 @@ The main goal of this parser is to transform an [Omnipath](http://omnipathdb.org
 Load required packages
 
 ```{r, message = FALSE}
+# main packages
 library(OmnipathR)
 library(hipathia)
+# annotation package to translate symbols into entrezs
+library(org.Hs.eg.db)
+# packages to handle and plot graphs
 library(igraph)
-library(dplyr)
 library(ggplot2)
 library(ggraph)
 library(Rgraphviz)
 library(cowplot)
-library(org.Hs.eg.db)
+library(ggforce)
+# other packages from tidyverse
+library(dplyr)
 library(purrr)
+# package to create pretty heatmap
+library(ComplexHeatmap)
+# custom parsing and plotting funs
 source("R/omnipath-to-hipathia.R")
 source("R/visualize-hipathia-graph.R")
+# set ggplot default theme
+theme_set(theme_bw() + theme(plot.title = element_text(hjust = 0.5)))
 ```
 
 ## Prepare Omnipath interactions 
@@ -40,7 +51,17 @@ intInteractions <- subset(interactions,
   subset(source_genesymbol != target_genesymbol)
 ```
 
-## Hipathia default
+Explore number of interactions per curation_effort level
+
+```{r, warning = FALSE}
+# as the majority of interactions occur in the low range of curation efforts, zoom this zone
+ggplot(intInteractions, aes(x = curation_effort)) +
+  geom_histogram(binwidth = 1) +
+  ggforce::facet_zoom(x = curation_effort %in% seq(-1,25, by = 1)) +
+  ggtitle("Interactions by curation effort")
+```
+
+## Hipathia default MGI
 
 Hipathia uses a pathway-centric approach, which isolates nodes and interactions in different biological contexts defined by KEGG. It decomposes the signaling networks into a meta graph information object (MGI), which contains the main graph, the decomposed signaling circuits (in form of [igraph](https://igraph.org/) objects) and the neccesary metadata to carry out the analysis. For this case of use, we will focus on the [cell cycle pathway](https://www.genome.jp/kegg-bin/show_pathway?hsa04110).
 
@@ -51,14 +72,20 @@ hipathiaMgi <- hipathia::load_pathways(species = "hsa", pathways_list = intPathw
 
 This is the complete network already processed to be used by Hipathia
 
-```{r}
+```{r, fig.width=8, fig.height=5}
 beautyHipathiaGraph(hipathiaMgi$pathigraphs$hsa04110$graph)
 ```
 
-And some of the decomposed circuits...
+Some of the decomposed subgraphs (all receptors that reach one effector)...
 
 ```{r}
-lapply(hipathiaMgi$pathigraphs$hsa04110$subgraphs[1:3], beautyHipathiaGraph)
+lapply(hipathiaMgi$pathigraphs$hsa04110$effector.subgraphs[1:2], beautyHipathiaGraph)
+```
+
+And some of the decomposed effector circuits (one receptor to one effector)...
+
+```{r}
+lapply(hipathiaMgi$pathigraphs$hsa04110$subgraphs[1:2], beautyHipathiaGraph)
 ```
 
 ## Hipathia nodes, Omnipath interactions
@@ -73,28 +100,107 @@ intGenes <- V(hipathiaMgi$pathigraphs$hsa04110$graph)$genesList %>%
   .[!is.na(.)]
 ```
 
+And subset the Omnipath interactions to those which contain a relation between genes in the pathway **including complexes**.
+
+```{r}
+sourceIndex <- strsplit(intInteractions$source_genesymbol, "_") %>% 
+  sapply(function(x) any(x %in% intGenes))
+targetIndex <- strsplit(intInteractions$target_genesymbol, "_") %>% 
+  sapply(function(x) any(x %in% intGenes))
+# filter to interactions fulfilling the criteria
+filteredInteractions <- intInteractions[sourceIndex & targetIndex, ]
+```
+
+
 Once with interesting genes (nodes), we can create a list of interactions using a range of curation effort cutoffs.
 
 ```{r}
-curationValues <- c(15, 20, 25, 30, 35, 40, 45, 50)
+curationValues <- c(15, 25, 35, 45, 55)
 interactionsList <- lapply(curationValues, function(cutoff) {
-  selectedInteractions <- subset(intInteractions, curation_effort >= cutoff) %>%
-    subset(source_genesymbol %in% intGenes & target_genesymbol %in% intGenes) 
+  selectedInteractions <- subset(filteredInteractions, curation_effort >= cutoff)
 })
 names(interactionsList) <- curationValues
 ```
 
-Once with the interactions filtered and prepared, we can apply the **omnipathToHipathia** function to transform this networks into the hipathia MGI object
+Once with the interactions filtered and prepared, we can apply the **omnipathToHipathia()** function to transform this networks into the hipathia MGI object. This function relies on the hipathia function **mgi_from_sif()**, which creates the MGI object from the sif and attribute files. The **omnipathToHipathia()** will format the network and write the files into a temporary location in order to be imported with hipathia.
 
 ```{r, message = FALSE}
-mgiList <- lapply(interactionsList, omnipathToHipathia)
+mgiList <- purrr::imap(interactionsList, function(interactions, cutoff){
+  t1 <- Sys.time()
+  mgi <- omnipathToHipathia(omnipathInteractions = interactions)
+  t2 <- Sys.time()
+  print(paste0("Curation effort cutoff: ", cutoff))
+  print(t2 - t1)
+  return(mgi)
+})
 ```
 
-Finally, we can visualize the resulting graphs for the range of curation effort cutoffs...
+Finally, we can visualize the resulting MGI graphs for the range of curation effort cutoffs...
 
-```{r, fig.width=25, fig.height=10}
+```{r, fig.width=13, fig.height=10}
 purrr::imap(mgiList, function(x, y) beautyHipathiaGraph(x$pathigraphs$hsa00$graph) + ggtitle(paste0("Curation efffort cutoff: ", y))) %>%
   cowplot::plot_grid(plotlist = ., nrow = 2)
+```
+
+## Hipathia run with BRCA data and Omnipath MGIs
+
+From the [hipathia vignette](https://www.bioconductor.org/packages/release/bioc/vignettes/hipathia/inst/doc/hipathia-vignette.pdf):
+
+"In order to illustrate the hipathia package functionalities an example dataset has been prepared. Data has been downloaded from The Cancer Genome Atlas data repository, from the BRCA-US project, release 20. 20 tumor and 20 normal samples of RNA-Seq data have been randomly selected and normalized. Specifically, raw data has been corrected for batch effect using the ComBat function from package sva, then corrected for RNA composition bias applying TMM normalization from package edgeR, and finally log-transformed."
+
+"The dataset brca is a SummarizedExperiment object, including the gene expression of the 40 samples in the assay raw, and the information about whether each sample comes from Tumor or Normal tissues in the group columns of the colData dataFrame."
+
+```{r}
+# prepare data for hipathia
+data("brca")
+toHipahia <- translate_data(brca_data, "hsa") %>%
+  normalize_data(., by_quantiles = TRUE)
+# add default hipathia pathway to analysis
+defaultMgi <- list("default" = hipathiaMgi)
+mgiList <- c(defaultMgi, mgiList)
+# iterative analysis with all MGIs, extracting path values after hipathia analysis
+pathValList <- lapply(mgiList, function(x) {
+  # perform hipathia analysis
+  pathVals <- hipathia::hipathia(toHipahia, metaginfo = x) %>%
+    get_paths_data(matrix = TRUE)
+  # get path names
+  rownames(pathVals) <- hipathia::get_path_names(metaginfo = x, names = rownames(pathVals))
+  # center path values
+  pathVals <- t(scale(t(pathVals))) 
+  return(pathVals)
+})
+```
+
+Plot a global heatmap to visualize path values by MGI
+
+```{r,fig.height=6, fig.width=16}
+# prepare matrix to plot
+toHm <- Reduce(rbind, pathValList) %>%
+  t()
+# remove non informative column names
+colnames(toHm) <- gsub("Omnipath:.|Cell cycle:.", "", colnames(toHm))
+# create group annotation
+set.seed(109)
+rightAnn <- ComplexHeatmap::rowAnnotation(df = brca_design)
+# create column split and annotation
+cutoff <- rep(names(pathValList), sapply(pathValList, nrow)) %>%
+  factor(x = ., levels = unique(.))
+colAnn <- ComplexHeatmap::HeatmapAnnotation(df = data.frame(cutoff = cutoff))
+# plot heatmap without column clustering
+Heatmap(toHm, 
+        right_annotation = rightAnn,
+        column_split = cutoff,
+        cluster_column_slices = FALSE,
+        show_row_names = FALSE,
+        border = TRUE,
+        row_title = "Patients")
+# plot heatmap with column clustering
+Heatmap(toHm, 
+        right_annotation = rightAnn,
+        top_annotation = colAnn,
+        show_row_names = FALSE,
+        border = TRUE,
+        row_title = "Patients")
 ```
 
 ## Note
@@ -105,7 +211,7 @@ purrr::imap(mgiList, function(x, y) beautyHipathiaGraph(x$pathigraphs$hsa00$grap
 
 1. Use the curation effort to create a range of results depending on the network reliability.
 
-2. Expand the effector nodes to new effecotrs, using Kinase-Substrate or TF-target interactions.
+2. Expand the effector nodes to new effectors, using Kinase-Substrate or TF-target interactions.
 
 3. Combine the functional annotation from different databases to create a list of context-specific pathways (such as KEGG, but without using only its interactions).
 

@@ -13,6 +13,7 @@
 #' 
 #' @importFrom dplyr mutate select group_by summarise ungroup transmute case_when
 #' @importFrom OmnipathR interaction_graph
+#' @importFrom AnnotationDbi mapIds
 #' @importFrom igraph V E induced_subgraph
 #'
 omnipathToHipathia <- function(omnipathInteractions, db = org.Hs.eg.db, addGraphVizLayout = TRUE) {

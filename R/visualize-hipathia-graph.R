@@ -1,4 +1,3 @@
-
 #' Create graphViz layout from graph
 #' 
 #' Creates a matrix containing the graphViz layout for an igraph 
@@ -45,7 +44,7 @@ graphVizLayout <- function(g, mode = "LR") {
 #' 
 #' @export
 #' 
-#' @importFrom igraph V E remove.vertex.attribute
+#' @importFrom igraph V E remove.vertex.attribute induced_subgraph
 #' @importFrom dplyr %>% case_when
 #' @importFrom grid arrow
 #' @importFrom ggraph ggraph geom_edge_link scale_edge_color_manual geom_node_label
@@ -58,20 +57,23 @@ beautyHipathiaGraph <- function(g) {
     g <- igraph::remove.vertex.attribute(g, "x") %>% 
       igraph::remove.vertex.attribute(graph = ., name = "y")
   }
+  # remove func nodes
+  notFuncNodes <- V(g)[!grepl("_func", V(g)$name)]
+  g <- igraph::induced_subgraph(g, vids = notFuncNodes)
   # prepare colors
   direction <- dplyr::case_when(igraph::E(g)$relation == 1 ~ "Activation", TRUE ~ "Inhibition")
+  # create labels replacing complexs by ...
+  labs <- igraph::V(g)$label %>%
+    gsub(pattern = " .*", replacement = " (C)", x = .)
   # plot and return graph
   p <- ggraph::ggraph(g, layout = graphVizLayout(g, mode = "LR")) +
-    ggraph::geom_edge_link(aes(color = direction), arrow = grid::arrow(length = unit(2, 'mm'), type = "closed"), end_cap = circle(5, 'mm')) +
+    ggraph::geom_edge_diagonal(aes(color = direction), 
+                               arrow = grid::arrow(length = unit(2, 'mm'), type = "closed"), 
+                               start_cap = rectangle(8, 5, 'mm'),
+                               end_cap = rectangle(10, 5, 'mm')) +
+    ggraph::geom_node_label(aes(label = labs), size = 2) +
     ggraph::scale_edge_color_manual(values = c("Activation"="red", "Inhibition"="blue")) +
-    ggraph::geom_node_label(aes(label = igraph::V(g)$label), size = 2) +
-    ggplot2::theme(panel.background = element_blank())
+    ggplot2::theme(panel.background = element_blank(), legend.position = "bottom")
   return(p)
   
 }
-
-
-  
-
-
-

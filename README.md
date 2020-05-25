@@ -208,15 +208,15 @@ mgiList <- purrr::imap(interactionsList, function(interactions, cutoff){
 ```
 
     ## [1] "Curation effort cutoff: 15"
-    ## Time difference of 3.212771 secs
+    ## Time difference of 3.265801 secs
     ## [1] "Curation effort cutoff: 25"
-    ## Time difference of 0.5865614 secs
+    ## Time difference of 0.5933142 secs
     ## [1] "Curation effort cutoff: 35"
-    ## Time difference of 0.4864852 secs
+    ## Time difference of 0.4850829 secs
     ## [1] "Curation effort cutoff: 45"
-    ## Time difference of 0.3831959 secs
+    ## Time difference of 0.3810277 secs
     ## [1] "Curation effort cutoff: 55"
-    ## Time difference of 0.3779583 secs
+    ## Time difference of 0.3708439 secs
 
 Finally, we can visualize the resulting MGI graphs for the range of
 curation effort
@@ -353,9 +353,7 @@ not receptors nor effectors.
 2.  Expand the effector nodes to new effectors, using Kinase-Substrate
     or TF-target interactions.
 
-3.  Combine the functional annotation from different databases to create
-    a list of context-specific pathways (such as KEGG, but without using
-    only its interactions).
+3.  Create a meta graph without filtering nodes by biological context.
 
 ## Session info
 

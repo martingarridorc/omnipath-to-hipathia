@@ -213,7 +213,7 @@ Heatmap(toHm,
 
 2. Expand the effector nodes to new effectors, using Kinase-Substrate or TF-target interactions.
 
-3. Combine the functional annotation from different databases to create a list of context-specific pathways (such as KEGG, but without using only its interactions).
+3. Create a meta graph without filtering nodes by biological context.
 
 ## Session info
 
